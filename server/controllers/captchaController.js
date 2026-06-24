@@ -3,22 +3,22 @@ const { fetchCaptcha } = require("../services/scraperService");
 const { sessionStore } = require("../services/sessionStore");
 
 async function getCaptcha(req, res) {
-  // Circuit breaker: refuse to spawn another browser if we're at capacity
+  // Circuit breaker: refuse if we're at the tab limit
   if (!sessionStore.hasCapacity()) {
     return res.status(503).json({
       success: false,
-      message: `Server is busy (max ${process.env.MAX_SESSIONS || 3} concurrent sessions). Please try again in a moment.`,
+      message: `Server is busy (${sessionStore.size()} active sessions). Please try again in a moment.`,
     });
   }
 
   try {
-    const { browser, page, captchaBase64 } = await fetchCaptcha();
+    // fetchCaptcha now returns { page, captchaBase64 } — no browser object
+    const { page, captchaBase64 } = await fetchCaptcha();
 
-    // FIX: use crypto.randomBytes for session ID instead of uuid v4,
-    // which gives a cryptographically random 32-byte hex token.
     const sessionId = randomBytes(32).toString("hex");
 
-    sessionStore.set(sessionId, { browser, page });
+    // Store only the page (tab), not a whole browser
+    sessionStore.set(sessionId, { page });
 
     res.json({ success: true, captchaImage: captchaBase64, sessionId });
   } catch (error) {

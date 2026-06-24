@@ -1,10 +1,10 @@
-const { openReraPage, getBrowser, closeBrowser } = require("./browserService");
+const { openReraPage, closePage } = require("./browserService");
 
 const delay = (ms) => new Promise((r) => setTimeout(r, ms));
 
 /* ═══════════════════════════════════════════════════════════════
-   KNOWN LABELS — defined once in Node.js, not serialised into
-   page.evaluate() on every call (was the original bug).
+   LABEL SETS — defined once in Node.js, never serialised into
+   page.evaluate() on every call.
 ═══════════════════════════════════════════════════════════════ */
 
 const SECTION_HEADERS = new Set([
@@ -49,7 +49,7 @@ const FIELD_LABELS = new Set([
 ]);
 
 /* ═══════════════════════════════════════════════════════════════
-   HELPERS (run in Node.js, not in browser context)
+   NODE.JS LABEL PARSERS
 ═══════════════════════════════════════════════════════════════ */
 
 function extractDate(str) {
@@ -59,15 +59,9 @@ function extractDate(str) {
 
 function extractNumber(str) {
   const parts = str.split(/\s+|\t/);
-  const num = parts.find((p) => /^\d+(\.\d+)?$/.test(p));
-  return num || "";
+  return parts.find((p) => /^\d+(\.\d+)?$/.test(p)) || "";
 }
 
-/**
- * From a flat array of trimmed, non-empty lines from innerText,
- * find the value that follows a given exact label.
- * occurrence: which occurrence to use (0 = first, 1 = second, …)
- */
 function getAfter(lines, labelExact, occurrence = 0) {
   let found = 0;
   for (let i = 0; i < lines.length; i++) {
@@ -106,21 +100,31 @@ function getAfterPrefix(lines, labelPrefix, occurrence = 0) {
 
 /* ═══════════════════════════════════════════════════════════════
    CAPTCHA
+   Opens a new tab on the shared browser.
+   Returns { page, captchaBase64 } — NO browser reference.
 ═══════════════════════════════════════════════════════════════ */
 
 async function fetchCaptcha() {
-  const browser = await getBrowser();
-  const page    = await openReraPage(browser);
-  if (!page) { await closeBrowser(browser); throw new Error("Failed to open RERA page."); }
+  const page = await openReraPage(); // tab on shared browser
 
   await page.waitForSelector("body", { timeout: 20000 });
-  await delay(2000);
+  await delay(3000); // slightly longer wait for Render's slower CPU
 
   const captchaEl = await findCaptchaImage(page);
-  if (!captchaEl) { await closeBrowser(browser); throw new Error("CAPTCHA image not found."); }
+  if (!captchaEl) {
+    await closePage(page);
+    throw new Error("CAPTCHA image not found.");
+  }
 
-  const buf = await captchaEl.screenshot({ type: "png" });
-  return { browser, page, captchaBase64: buf.toString("base64") };
+  let buf = await captchaEl.screenshot({ type: "png" });
+
+  // If screenshot is blank/tiny, wait longer and retry once
+  if (buf.length < 1000) {
+    await delay(4000);
+    buf = await captchaEl.screenshot({ type: "png" });
+  }
+
+  return { page, captchaBase64: buf.toString("base64") };
 }
 
 async function findCaptchaImage(page) {
@@ -158,8 +162,6 @@ async function detectCaptchaFailure(page) {
 
 /* ═══════════════════════════════════════════════════════════════
    SEARCH FORM SUBMISSION
-   FIX: replaces blind delay(8000) with waitForSelector on the
-        results table, with a 30s timeout fallback.
 ═══════════════════════════════════════════════════════════════ */
 
 async function submitSearch(page, searchParams, captchaText) {
@@ -212,13 +214,10 @@ async function submitSearch(page, searchParams, captchaText) {
   if (!submitSel) throw new Error("Submit button not found.");
   await page.evaluate((sel) => { document.querySelector(sel)?.click(); }, submitSel);
 
-  // FIX: wait for results table to appear instead of a fixed 8-second sleep.
-  // Falls back to a 30-second hard timeout so the request doesn't hang forever.
+  // Wait for results table instead of a fixed sleep
   try {
     await page.waitForSelector("table tr", { timeout: 30000 });
-  } catch (_) {
-    // Table may not appear on CAPTCHA failure — detectCaptchaFailure handles that below.
-  }
+  } catch (_) {}
 
   const failed = await detectCaptchaFailure(page);
   if (failed) throw new Error("CAPTCHA_INVALID");
@@ -252,27 +251,20 @@ async function scrapeResultsTable(page) {
 
 /* ═══════════════════════════════════════════════════════════════
    PROJECT DETAIL PAGE SCRAPER
-   FIX: label matching now runs in Node.js (not inside page.evaluate)
-        — easier to test and no large Set serialisation per call.
-   FIX: per-page timeout via Promise.race to prevent one slow
-        detail page from blocking the entire allSettled batch.
+   Opens a new tab on the shared browser, scrapes, closes the tab.
 ═══════════════════════════════════════════════════════════════ */
 
 const DETAIL_PAGE_TIMEOUT_MS = 30_000;
 
-async function scrapeProjectDetails(currentPage, viewUrl) {
-  const browser = currentPage.browser();
-  const page    = await browser.newPage();
+async function scrapeProjectDetails(_unusedPage, viewUrl) {
+  // Open a fresh tab on the shared browser for each detail page
+  const page = await openReraPage().catch(() => null);
+  if (!page) return {};
 
   const scrapeWork = async () => {
-    await page.setUserAgent(
-      "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 " +
-      "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
-    );
     await page.goto(viewUrl, { waitUntil: "domcontentloaded", timeout: 60000 });
     await delay(2000);
 
-    // Extract raw lines from the browser; all parsing happens in Node.js below.
     const rawLines = await page.evaluate(() =>
       document.body.innerText
         .split("\n")
@@ -280,7 +272,6 @@ async function scrapeProjectDetails(currentPage, viewUrl) {
         .filter(Boolean)
     );
 
-    // ── Parse in Node.js ─────────────────────────────────────────────────
     const ga  = (label, occ = 0)  => getAfter(rawLines, label, occ);
     const gap = (prefix, occ = 0) => getAfterPrefix(rawLines, prefix, occ);
 
@@ -301,11 +292,9 @@ async function scrapeProjectDetails(currentPage, viewUrl) {
     const totalUnits               = gap("Total Building Units", 0);
     const approvedBuildUpArea      = ga("Approved Built up Area (In Sqmts)", 0);
     const mortgageArea             = ga("Mortgage Area (In Sqmts)", 0);
-
-    // District / Mandal / Village appear twice; take the second (project location)
-    const district = ga("District", 1);
-    const mandal   = ga("Mandal", 1);
-    const village  = ga("Village/City/Town", 1);
+    const district                 = ga("District", 1);
+    const mandal                   = ga("Mandal", 1);
+    const village                  = ga("Village/City/Town", 1);
 
     const houseNo      = gap("House No/Sy. No", 0);
     const buildingName = ga("Building Name", 0);
@@ -324,7 +313,6 @@ async function scrapeProjectDetails(currentPage, viewUrl) {
     };
   };
 
-  // Race the scrape work against a hard timeout
   const timeout = new Promise((_, reject) =>
     setTimeout(() => reject(new Error("Detail page timeout")), DETAIL_PAGE_TIMEOUT_MS)
   );
@@ -335,7 +323,7 @@ async function scrapeProjectDetails(currentPage, viewUrl) {
     console.error("[scrapeProjectDetails] error:", err.message);
     return {};
   } finally {
-    await page.close().catch(() => {});
+    await closePage(page); // always close the detail tab
   }
 }
 

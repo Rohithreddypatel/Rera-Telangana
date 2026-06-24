@@ -3,8 +3,8 @@ require("dotenv").config();
 const express   = require("express");
 const cors      = require("cors");
 const mongoose  = require("mongoose");
-const { closeBrowser } = require("./services/browserService");
-const { sessionStore } = require("./services/sessionStore");
+const { closeSharedBrowser } = require("./services/browserService");
+const { sessionStore }       = require("./services/sessionStore");
 
 const app  = express();
 const PORT = process.env.PORT || 5000;
@@ -53,10 +53,8 @@ mongoose
 // ── Graceful Shutdown ───────────────────────────────────────────────────────
 async function shutdown() {
   console.log("\n🔴  Shutting down…");
-  for (const session of sessionStore.all()) {
-    await closeBrowser(session.browser).catch(() => {});
-  }
   sessionStore.clear();
+  await closeSharedBrowser();
   await mongoose.disconnect();
   process.exit(0);
 }

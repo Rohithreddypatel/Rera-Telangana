@@ -1,38 +1,37 @@
 /**
- * sessionStore — replaces the raw global.reraSessions object.
+ * sessionStore — tracks active CAPTCHA sessions.
  *
- * Fixes:
- *  - Bounded: rejects new sessions when MAX_SESSIONS limit is reached (circuit breaker)
- *  - TTL cleanup: auto-evicts sessions older than SESSION_TTL_MS
- *  - Prototype-safe: only accepts validated UUID keys, so __proto__ / constructor attacks are impossible
- *  - Observable: exposes size() and all() for the health endpoint
+ * In the shared-browser model a "session" is just a PAGE (tab), not a whole
+ * browser. So the capacity limit is now about tab count, not process count.
+ * Each tab uses ~5 MB, so 50 tabs = ~250 MB — perfectly fine on the free tier.
+ *
+ * MAX_SESSIONS now defaults to 20 (was 3).
+ * SESSION_TTL_MS is 90 seconds — short enough to reclaim tabs from users who
+ * loaded a CAPTCHA but never submitted.
  */
 
-const { closeBrowser } = require("./browserService");
+const { closePage } = require("./browserService");
 
-const MAX_SESSIONS   = parseInt(process.env.MAX_SESSIONS || "3", 10);
-const SESSION_TTL_MS = 5 * 60 * 1000; // 5 minutes
+const MAX_SESSIONS   = parseInt(process.env.MAX_SESSIONS || "20", 10);
+const SESSION_TTL_MS = 90 * 1000; // 90 seconds
 
 class SessionStore {
   constructor() {
     this._map = new Map();
 
-    // Auto-cleanup expired sessions every 60 s
-    this._timer = setInterval(() => this._evictExpired(), 60_000);
-    this._timer.unref(); // don't keep the process alive just for cleanup
+    // Evict expired sessions every 30 s (was 60 s)
+    this._timer = setInterval(() => this._evictExpired(), 30_000);
+    this._timer.unref();
   }
 
-  /** Returns true if a new session can be created. */
   hasCapacity() {
     return this._map.size < MAX_SESSIONS;
   }
 
-  /** Store a session. key must be a validated UUID string. */
   set(key, session) {
     this._map.set(key, { ...session, createdAt: Date.now() });
   }
 
-  /** Retrieve and remove a session atomically (one-time use). */
   consume(key) {
     const session = this._map.get(key);
     if (!session) return null;
@@ -40,27 +39,20 @@ class SessionStore {
     return session;
   }
 
-  /** Number of active sessions. */
-  size() {
-    return this._map.size;
-  }
+  size() { return this._map.size; }
 
-  /** All session objects (for health check / shutdown). */
-  all() {
-    return [...this._map.values()];
-  }
+  all() { return [...this._map.values()]; }
 
-  /** Remove all sessions (used during shutdown). */
-  clear() {
-    this._map.clear();
-  }
+  clear() { this._map.clear(); }
 
   async _evictExpired() {
     const now = Date.now();
     for (const [key, session] of this._map) {
       if (now - session.createdAt > SESSION_TTL_MS) {
-        await closeBrowser(session.browser).catch(() => {});
+        // Close the tab, not the whole browser
+        await closePage(session.page).catch(() => {});
         this._map.delete(key);
+        console.log(`[SessionStore] Evicted expired session ${key.slice(0, 8)}…`);
       }
     }
   }
