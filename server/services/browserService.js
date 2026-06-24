@@ -12,11 +12,13 @@ const puppeteer = require("puppeteer");
 async function getBrowser() {
   const browser = await puppeteer.launch({
     headless: true,
+    executablePath: process.env.PUPPETEER_EXECUTABLE_PATH || '/usr/bin/chromium-browser',
     args: [
-      "--no-sandbox",            // Required in Docker; remove on bare-metal for security
+      "--no-sandbox",
       "--disable-setuid-sandbox",
-      "--disable-dev-shm-usage", // Prevents OOM in low-memory containers
+      "--disable-dev-shm-usage",
       "--disable-gpu",
+      "--single-process",       // important for low-RAM free tier
     ],
   });
   return browser;
