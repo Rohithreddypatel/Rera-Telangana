@@ -1,0 +1,87 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  :root {
+    --gov-blue: #0062c9;
+    --gov-dark: #07224a;
+    --gov-light: #f0f7ff;
+    --accent: #fbbf24;
+  }
+
+  * {
+    box-sizing: border-box;
+  }
+
+  html {
+    scroll-behavior: smooth;
+  }
+
+  body {
+    @apply bg-gov-950 text-gray-100 font-sans antialiased;
+    background-image:
+      radial-gradient(ellipse at 20% 10%, rgba(6, 67, 133, 0.25) 0%, transparent 60%),
+      radial-gradient(ellipse at 80% 80%, rgba(1, 78, 163, 0.15) 0%, transparent 60%);
+    min-height: 100vh;
+  }
+}
+
+@layer components {
+  .card {
+    @apply bg-gov-900/60 border border-gov-700/40 rounded-2xl backdrop-blur-sm;
+  }
+
+  .btn-primary {
+    @apply bg-gov-600 hover:bg-gov-500 text-white font-semibold px-5 py-2.5 rounded-xl
+           transition-all duration-200 disabled:opacity-50 disabled:cursor-not-allowed
+           active:scale-95 shadow-lg shadow-gov-900/50;
+  }
+
+  .btn-secondary {
+    @apply bg-gov-800/60 hover:bg-gov-700/60 text-gov-200 border border-gov-600/40
+           font-medium px-4 py-2 rounded-xl transition-all duration-200 active:scale-95;
+  }
+
+  .input-field {
+    @apply w-full bg-gov-900/80 border border-gov-700/50 text-gray-100 placeholder-gov-400/60
+           rounded-xl px-4 py-3 focus:outline-none focus:border-gov-400 focus:ring-2
+           focus:ring-gov-400/20 transition-all duration-200 font-mono text-sm;
+  }
+
+  .status-badge {
+    @apply inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-semibold;
+  }
+
+  .table-row-hover {
+    @apply hover:bg-gov-800/40 transition-colors duration-150;
+  }
+}
+
+/* Scrollbar styling */
+::-webkit-scrollbar { width: 6px; height: 6px; }
+::-webkit-scrollbar-track { background: rgba(7, 34, 74, 0.3); }
+::-webkit-scrollbar-thumb { background: rgba(0, 98, 201, 0.4); border-radius: 3px; }
+::-webkit-scrollbar-thumb:hover { background: rgba(0, 98, 201, 0.7); }
+
+/* Animated gradient border on focus */
+.glow-border:focus-within {
+  box-shadow: 0 0 0 2px rgba(54, 158, 249, 0.35);
+}
+
+/* Pulse animation for loading */
+@keyframes shimmer {
+  0% { background-position: -200% 0; }
+  100% { background-position: 200% 0; }
+}
+
+.shimmer {
+  background: linear-gradient(
+    90deg,
+    rgba(6, 67, 133, 0.2) 25%,
+    rgba(54, 158, 249, 0.1) 50%,
+    rgba(6, 67, 133, 0.2) 75%
+  );
+  background-size: 200% 100%;
+  animation: shimmer 1.5s infinite;
+}
