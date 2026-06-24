@@ -105,23 +105,39 @@ function getAfterPrefix(lines, labelPrefix, occurrence = 0) {
 ═══════════════════════════════════════════════════════════════ */
 
 async function fetchCaptcha() {
-  const page = await openReraPage(); // tab on shared browser
+  const page = await openReraPage();
 
   await page.waitForSelector("body", { timeout: 20000 });
-  await delay(6000); // slightly longer wait for Render's slower CPU
 
+  // Wait for the CAPTCHA image element to appear
   const captchaEl = await findCaptchaImage(page);
   if (!captchaEl) {
     await closePage(page);
     throw new Error("CAPTCHA image not found.");
   }
 
+  // Wait until the image has actually loaded (naturalWidth > 0 means it rendered)
+  await page.waitForFunction(
+    (el) => el.naturalWidth > 0,
+    { timeout: 15000 },
+    captchaEl
+  ).catch(() => {}); // don't throw if it times out — try screenshotting anyway
+
+  // Extra buffer for slow Render CPU
+  await delay(1000);
+
   let buf = await captchaEl.screenshot({ type: "png" });
 
-  // If screenshot is blank/tiny, wait longer and retry once
+  // If still blank, wait longer and retry
   if (buf.length < 1000) {
-    await delay(4000);
+    await delay(5000);
     buf = await captchaEl.screenshot({ type: "png" });
+  }
+
+  // If still blank after retry, throw so user gets a clear error
+  if (buf.length < 1000) {
+    await closePage(page);
+    throw new Error("CAPTCHA image failed to render. Please try again.");
   }
 
   return { page, captchaBase64: buf.toString("base64") };
