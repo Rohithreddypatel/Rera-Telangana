@@ -75,8 +75,11 @@ async function getSharedBrowser() {
 }
 
 /**
- * Opens a fresh RERA search page (tab) on the shared browser.
- * Each user session gets its own tab — completely isolated state.
+ * Opens a fresh blank tab on the shared browser.
+ * Caller handles navigation so each use case can pick its own waitUntil strategy:
+ *   - fetchCaptcha uses networkidle2 (waits for all images to load)
+ *   - submitSearch uses domcontentloaded (faster, doesn't need images)
+ *   - scrapeProjectDetails uses domcontentloaded
  */
 async function openReraPage() {
   const browser = await getSharedBrowser();
@@ -87,10 +90,6 @@ async function openReraPage() {
     "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
   );
   await page.setDefaultNavigationTimeout(120000);
-  await page.goto("https://rerait.telangana.gov.in/SearchList/Search", {
-    waitUntil: "domcontentloaded",
-    timeout: 120000,
-  });
   return page;
 }
 

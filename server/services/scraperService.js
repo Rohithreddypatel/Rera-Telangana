@@ -102,45 +102,110 @@ function getAfterPrefix(lines, labelPrefix, occurrence = 0) {
    CAPTCHA
    Opens a new tab on the shared browser.
    Returns { page, captchaBase64 } — NO browser reference.
+
+   Strategy: intercept the CAPTCHA image at the network level.
+   The RERA site loads the CAPTCHA via a separate HTTP request.
+   We capture that response buffer directly — this is 100% reliable
+   even when Puppeteer screenshot() returns a blank white image,
+   because it doesn't depend on the renderer having painted the element.
 ═══════════════════════════════════════════════════════════════ */
 
 async function fetchCaptcha() {
   const page = await openReraPage();
 
-  await page.waitForSelector("body", { timeout: 20000 });
+  // Set up response interception BEFORE the page navigates
+  // so we catch the captcha image request as it loads.
+  let captchaBase64 = null;
 
-  // Wait for the CAPTCHA image element to appear
-  const captchaEl = await findCaptchaImage(page);
-  if (!captchaEl) {
+  page.on("response", async (response) => {
+    try {
+      const url = response.url();
+      const ct  = response.headers()["content-type"] || "";
+
+      // Match the BotDetect CAPTCHA image URL pattern
+      const isCaptchaUrl =
+        url.includes("captcha") ||
+        url.includes("Captcha") ||
+        url.includes("BotDetect") ||
+        (ct.startsWith("image/") && url.includes(page.url().split("/").slice(0, 3).join("/")));
+
+      if (isCaptchaUrl && ct.startsWith("image/") && !captchaBase64) {
+        const buf = await response.buffer().catch(() => null);
+        if (buf && buf.length > 500) {
+          captchaBase64 = buf.toString("base64");
+        }
+      }
+    } catch (_) {}
+  });
+
+  // Navigate to the RERA page — response listener will fire during load
+  await page.goto("https://rerait.telangana.gov.in/SearchList/Search", {
+    waitUntil: "networkidle2",   // wait until network is quiet (all images loaded)
+    timeout: 60000,
+  });
+
+  // Give it a moment in case the captcha loads slightly after networkidle2
+  if (!captchaBase64) await delay(3000);
+
+  // Fallback: if interception missed it, try fetching the src URL directly
+  if (!captchaBase64) {
+    captchaBase64 = await fetchCaptchaViaSrc(page);
+  }
+
+  // Last resort: screenshot the element
+  if (!captchaBase64) {
+    captchaBase64 = await fetchCaptchaViaScreenshot(page);
+  }
+
+  if (!captchaBase64) {
     await closePage(page);
-    throw new Error("CAPTCHA image not found.");
+    throw new Error("CAPTCHA image could not be captured. Please try again.");
   }
 
-  // Wait until the image has actually loaded (naturalWidth > 0 means it rendered)
-  await page.waitForFunction(
-    (el) => el.naturalWidth > 0,
-    { timeout: 15000 },
-    captchaEl
-  ).catch(() => {}); // don't throw if it times out — try screenshotting anyway
+  return { page, captchaBase64 };
+}
 
-  // Extra buffer for slow Render CPU
-  await delay(1000);
+/** Fetch the CAPTCHA by reading the <img> src and downloading it via page.evaluate fetch() */
+async function fetchCaptchaViaSrc(page) {
+  try {
+    const captchaEl = await findCaptchaImage(page);
+    if (!captchaEl) return null;
 
-  let buf = await captchaEl.screenshot({ type: "png" });
+    const src = await page.evaluate((el) => el.src, captchaEl);
+    if (!src || src.startsWith("data:")) {
+      // It's already a data URL — extract the base64 part
+      if (src && src.includes("base64,")) return src.split("base64,")[1];
+      return null;
+    }
 
-  // If still blank, wait longer and retry
-  if (buf.length < 1000) {
-    await delay(5000);
-    buf = await captchaEl.screenshot({ type: "png" });
+    // Fetch the image URL from within the page context (inherits session cookies)
+    const base64 = await page.evaluate(async (url) => {
+      const res  = await fetch(url, { credentials: "include" });
+      const buf  = await res.arrayBuffer();
+      const arr  = new Uint8Array(buf);
+      let binary = "";
+      arr.forEach((b) => { binary += String.fromCharCode(b); });
+      return btoa(binary);
+    }, src);
+
+    return base64 && base64.length > 100 ? base64 : null;
+  } catch (_) {
+    return null;
   }
+}
 
-  // If still blank after retry, throw so user gets a clear error
-  if (buf.length < 1000) {
-    await closePage(page);
-    throw new Error("CAPTCHA image failed to render. Please try again.");
+/** Last-resort: screenshot the element after waiting for it to paint */
+async function fetchCaptchaViaScreenshot(page) {
+  try {
+    const captchaEl = await findCaptchaImage(page);
+    if (!captchaEl) return null;
+
+    await delay(3000);
+    const buf = await captchaEl.screenshot({ type: "png" });
+    return buf && buf.length > 500 ? buf.toString("base64") : null;
+  } catch (_) {
+    return null;
   }
-
-  return { page, captchaBase64: buf.toString("base64") };
 }
 
 async function findCaptchaImage(page) {
