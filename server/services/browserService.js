@@ -1,24 +1,16 @@
 const puppeteer = require("puppeteer");
 
-/**
- * Launch a new headless Chromium instance.
- *
- * NOTE on --no-sandbox:
- *   This flag is required when running inside Docker/containers (no user namespaces).
- *   If you are running on bare metal with a normal OS user, remove --no-sandbox and
- *   --disable-setuid-sandbox to keep the Chromium renderer sandbox active, which
- *   protects the host if the scraped page serves malicious JavaScript.
- */
 async function getBrowser() {
   const browser = await puppeteer.launch({
     headless: true,
-    executablePath: process.env.PUPPETEER_EXECUTABLE_PATH || '/usr/bin/chromium-browser',
+    executablePath: process.env.PUPPETEER_EXECUTABLE_PATH || undefined,
     args: [
       "--no-sandbox",
       "--disable-setuid-sandbox",
       "--disable-dev-shm-usage",
       "--disable-gpu",
-      "--single-process",       // important for low-RAM free tier
+      "--single-process",
+      "--no-zygote",
     ],
   });
   return browser;
