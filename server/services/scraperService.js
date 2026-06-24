@@ -108,7 +108,7 @@ async function fetchCaptcha() {
   const page = await openReraPage(); // tab on shared browser
 
   await page.waitForSelector("body", { timeout: 20000 });
-  await delay(3000); // slightly longer wait for Render's slower CPU
+  await delay(6000); // slightly longer wait for Render's slower CPU
 
   const captchaEl = await findCaptchaImage(page);
   if (!captchaEl) {
