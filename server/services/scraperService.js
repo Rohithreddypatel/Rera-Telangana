@@ -113,47 +113,50 @@ function getAfterPrefix(lines, labelPrefix, occurrence = 0) {
 async function fetchCaptcha() {
   const page = await openReraPage();
 
-  // Set up response interception BEFORE the page navigates
-  // so we catch the captcha image request as it loads.
+  // Intercept ONLY the BotDetect CAPTCHA image — not logos or other images.
+  // BotDetect serves the CAPTCHA from a URL containing "BotDetectCaptcha",
+  // "CaptchaImage", or "/captcha.ashx" — never from a generic image path.
+  // The old catch-all "(any image from same domain)" was matching the MahaIT logo.
   let captchaBase64 = null;
 
   page.on("response", async (response) => {
     try {
-      const url = response.url();
+      const url = response.url().toLowerCase();
       const ct  = response.headers()["content-type"] || "";
 
-      // Match the BotDetect CAPTCHA image URL pattern
-      const isCaptchaUrl =
-        url.includes("captcha") ||
-        url.includes("Captcha") ||
-        url.includes("BotDetect") ||
-        (ct.startsWith("image/") && url.includes(page.url().split("/").slice(0, 3).join("/")));
+      const isBotDetectCaptcha =
+        url.includes("botdetectcaptcha") ||
+        url.includes("captchaimage") ||
+        url.includes("/captcha.ashx") ||
+        url.includes("simplecaptcha") ||
+        (url.includes("captcha") && !url.includes("mahait") && ct.startsWith("image/"));
 
-      if (isCaptchaUrl && ct.startsWith("image/") && !captchaBase64) {
+      if (isBotDetectCaptcha && !captchaBase64) {
         const buf = await response.buffer().catch(() => null);
         if (buf && buf.length > 500) {
           captchaBase64 = buf.toString("base64");
+          console.log("[fetchCaptcha] Captured via network interception, bytes:", buf.length);
         }
       }
     } catch (_) {}
   });
 
-  // Navigate to the RERA page — response listener will fire during load
   await page.goto("https://rerait.telangana.gov.in/SearchList/Search", {
-    waitUntil: "networkidle2",   // wait until network is quiet (all images loaded)
+    waitUntil: "networkidle2",
     timeout: 60000,
   });
 
-  // Give it a moment in case the captcha loads slightly after networkidle2
-  if (!captchaBase64) await delay(3000);
+  if (!captchaBase64) await delay(2000);
 
-  // Fallback: if interception missed it, try fetching the src URL directly
+  // Fallback 1: find the <img> CAPTCHA element and fetch its src
   if (!captchaBase64) {
+    console.log("[fetchCaptcha] Interception missed — trying src fetch");
     captchaBase64 = await fetchCaptchaViaSrc(page);
   }
 
-  // Last resort: screenshot the element
+  // Fallback 2: screenshot the element
   if (!captchaBase64) {
+    console.log("[fetchCaptcha] Src fetch missed — trying screenshot");
     captchaBase64 = await fetchCaptchaViaScreenshot(page);
   }
 
@@ -165,20 +168,42 @@ async function fetchCaptcha() {
   return { page, captchaBase64 };
 }
 
-/** Fetch the CAPTCHA by reading the <img> src and downloading it via page.evaluate fetch() */
+/**
+ * Fallback 1: find the real CAPTCHA <img> by its known selectors,
+ * then fetch its src URL from within the page (inherits session cookies).
+ * This correctly targets only the CAPTCHA element, not logos or banners.
+ */
 async function fetchCaptchaViaSrc(page) {
   try {
-    const captchaEl = await findCaptchaImage(page);
+    // Use only CAPTCHA-specific selectors — NOT the generic "any <img>" fallback
+    const CAPTCHA_SELECTORS = [
+      "img.BotDetectCaptchaImage",
+      'img[src*="BotDetectCaptcha" i]',
+      'img[src*="captcha.ashx" i]',
+      "#CaptchaImage",
+      "#imgCaptcha",
+      'img[id*="captcha" i]',
+      'img[src*="captcha" i]',
+    ];
+
+    let captchaEl = null;
+    for (const sel of CAPTCHA_SELECTORS) {
+      try {
+        const el = await page.$(sel);
+        if (el) { captchaEl = el; break; }
+      } catch (_) {}
+    }
     if (!captchaEl) return null;
 
     const src = await page.evaluate((el) => el.src, captchaEl);
-    if (!src || src.startsWith("data:")) {
-      // It's already a data URL — extract the base64 part
-      if (src && src.includes("base64,")) return src.split("base64,")[1];
-      return null;
+    if (!src) return null;
+
+    // Already a data URL
+    if (src.startsWith("data:") && src.includes("base64,")) {
+      return src.split("base64,")[1];
     }
 
-    // Fetch the image URL from within the page context (inherits session cookies)
+    // Fetch via page context so session cookies are included
     const base64 = await page.evaluate(async (url) => {
       const res  = await fetch(url, { credentials: "include" });
       const buf  = await res.arrayBuffer();
