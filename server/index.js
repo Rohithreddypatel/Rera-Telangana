@@ -7,6 +7,7 @@ const { closeSharedBrowser } = require("./services/browserService");
 const { sessionStore }       = require("./services/sessionStore");
 
 const app  = express();
+app.set("trust proxy", 1); 
 const PORT = process.env.PORT || 5000;
 
 // ── Validate required env vars ─────────────────────────────────────────────
